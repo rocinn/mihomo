@@ -1,5 +1,6 @@
-# mihomo (Clash.Meta) 配置 —— 本机实测可用版本: v1.19.33 linux loong64 **abi1**
-# 注意: 必须用 abi1 变体, abi2 在本机(3A6000 + 4.19 内核)会段错误
+# mihomo (Clash.Meta) 配置
+# ABI: 新世界(Loongnix 25 / glibc >= 2.36)用 abi2；旧世界(Loongnix 20 / 4.19 内核)用 abi1
+#      install.sh 会自动判定并实测能否运行,结果记录在 ~/.config/mihomo/abi
 # 订阅地址请填在下面 proxy-providers 的 url
 
 mixed-port: 7890
@@ -37,9 +38,12 @@ dns:
   nameserver:
     - https://dns.alidns.com/dns-query
     - tls://223.5.5.5
+  # 本机网络实测：tls://1.1.1.1 / tls://8.8.8.8 不可达（853 被阻断、dns.google 超时），
+  # 留着会让每次 GEOIP 判定都等满超时（约 10s），表现为"走 7890 很慢/直接失败"。
+  # 故 fallback 改用可达的国内加密 DNS；若能直连境外 DNS，可换回 1.1.1.1 / 8.8.8.8。
   fallback:
-    - tls://1.1.1.1
-    - tls://8.8.8.8
+    - https://doh.pub/dns-query
+    - tls://223.5.5.5
   fallback-filter:
     geoip: true
     geoip-code: CN

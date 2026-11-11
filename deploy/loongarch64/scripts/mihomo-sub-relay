@@ -20,7 +20,10 @@ import sys
 import urllib.parse
 import urllib.request
 
-import yaml
+try:
+    import yaml  # 可选依赖;缺失时降级为 JSON 输出(JSON 是合法 YAML)
+except ImportError:
+    yaml = None
 
 HOME = os.path.expanduser("~")
 UPSTREAM_FILE = os.path.join(HOME, ".config/mihomo/relay-upstream")
@@ -269,17 +272,23 @@ PARSERS = [
 
 
 def convert(text):
-    """把任意订阅内容转成 {'proxies': [...]} 字典。"""
+    """把任意订阅内容转成 (kind, payload)。
+
+    kind == "dict": payload 为 {'proxies': [...]},需再序列化;
+    kind == "raw" : payload 已是 Clash YAML 原文(无 PyYAML 时原样透传)。
+    """
     text = (text or "").strip()
     if not text:
-        return {"proxies": []}
+        return "dict", {"proxies": []}
 
     # 1) 已经是 Clash YAML
     if text.startswith("proxies:") or "proxy-groups:" in text[:4000]:
+        if yaml is None:
+            return "raw", text
         try:
             d = yaml.safe_load(text)
             if isinstance(d, dict) and "proxies" in d:
-                return {"proxies": d.get("proxies") or []}
+                return "dict", {"proxies": d.get("proxies") or []}
         except yaml.YAMLError:
             pass
 
@@ -288,10 +297,12 @@ def convert(text):
     if dec is not None:
         inner = dec.decode("utf-8", "ignore").strip()
         if inner.startswith("proxies:") or "proxy-groups:" in inner[:4000]:
+            if yaml is None:
+                return "raw", inner
             try:
                 d = yaml.safe_load(inner)
                 if isinstance(d, dict) and "proxies" in d:
-                    return {"proxies": d.get("proxies") or []}
+                    return "dict", {"proxies": d.get("proxies") or []}
             except yaml.YAMLError:
                 pass
         text = inner
@@ -312,7 +323,7 @@ def convert(text):
                 if p:
                     proxies.append(p)
                 break
-    return {"proxies": proxies}
+    return "dict", {"proxies": proxies}
 
 
 def fetch(upstream):
@@ -341,10 +352,19 @@ def handle(client, path):
             client.wfile.write(body)
             return
         raw = fetch(upstream)
-        data = convert(raw)
-        out = yaml.safe_dump(data, allow_unicode=True, sort_keys=False,
-                             default_flow_style=False).encode("utf-8")
-        log("转换完成: 原始 %d 字节 -> %d 个节点" % (len(raw), len(data["proxies"])))
+        kind, data = convert(raw)
+        if kind == "raw":
+            out = data.encode("utf-8")
+            log("转换完成: 原始 %d 字节 -> 已是 Clash YAML,原样透传(未装 PyYAML)" % len(raw))
+        else:
+            if yaml is not None:
+                out = yaml.safe_dump(data, allow_unicode=True, sort_keys=False,
+                                     default_flow_style=False).encode("utf-8")
+            else:
+                # JSON 是合法 YAML, mihomo 的 yaml.v3 可直接解析
+                out = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+            log("转换完成: 原始 %d 字节 -> %d 个节点%s"
+                % (len(raw), len(data["proxies"]), "" if yaml is not None else " (JSON 输出)"))
         client.send_response(200)
         client.send_header("Content-Type", "text/yaml; charset=utf-8")
         client.send_header("Content-Length", str(len(out)))
@@ -376,7 +396,8 @@ def main():
             pass
 
     srv = HTTPServer(("127.0.0.1", PORT), Handler)
-    log("订阅中转启动于 127.0.0.1:%d,上游配置文件 %s" % (PORT, UPSTREAM_FILE))
+    log("订阅中转启动于 127.0.0.1:%d,上游配置文件 %s,PyYAML=%s"
+        % (PORT, UPSTREAM_FILE, "yes" if yaml is not None else "no(JSON 兼容输出)"))
     print("mihomo 订阅中转运行中: http://127.0.0.1:%d/sub" % PORT)
     srv.serve_forever()
 

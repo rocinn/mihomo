@@ -14,6 +14,7 @@ else
 fi
 
 echo "版本: $(wget -q -O - "$API/version" 2>/dev/null || echo '(API 无响应)')"
+echo "ABI : $(cat "$HOME/.config/mihomo/abi" 2>/dev/null || echo '未记录')  |  系统: $(getconf GNU_LIBC_VERSION 2>/dev/null || echo 'glibc ?') / $(uname -r)"
 echo "配置: $CFG"
 
 echo

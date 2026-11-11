@@ -1,21 +1,31 @@
 # mihomo (Clash.Meta) 本机使用手册
 
-> 适用机器：Loongnix GNU/Linux 20 (DaoXiangHu) / loongarch64 / KDE Plasma (X11)
+> 适用机器：Loongnix GNU/Linux 20（旧世界，abi1）/ Loongnix GNU/Linux 25（新世界，abi2）
+> / loongarch64 / KDE Plasma (X11)
+>
+> 文中「本机」默认指**新世界那台**（Loongnix 25 / abi2 / linger 未开）。
+> 旧世界机把 `abi2` 换成 `abi1` 即可，其余命令一致；不确定时用 `./install.sh --check` 看。
 
 ## 一、为什么是 mihomo 而不是原版 Clash
 
 原版 Clash / Clash Premium 只发布 x86_64 与 arm64 二进制包，**没有 loongarch64 版本**。
 Clash.Meta 的继任者 **mihomo** 官方提供 `linux-loong64` 构建，所以本机只能选它。
 
-⚠️ 本机必须使用 **abi1** 变体（3A6000 + 4.19 内核下 abi2 会段错误）：
+ABI 变体由系统决定，`install.sh` 会自动判定（先看 glibc，再实测二进制能否运行）：
+
+| 系统 | glibc | 用哪个变体 |
+|---|---|---|
+| Loongnix 20（旧世界） | 2.28 | `abi1` |
+| Loongnix 25（新世界） | 2.41 | `abi2` |
 
 ```bash
 # 官方 deb 包安装（需要 root 密码）
-wget https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-loong64-abi1-v1.19.33.deb
-sudo apt install ./mihomo-linux-loong64-abi1-v1.19.33.deb
+wget https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-loong64-abi2-v1.19.34.deb
+sudo apt install ./mihomo-linux-loong64-abi2-v1.19.34.deb
 ```
 
-本机当前用的是免 root 的用户级安装：`~/.local/bin/mihomo`（v1.19.33 loong64 abi1）。
+本机当前用的是免 root 的用户级安装：`~/.local/bin/mihomo`（v1.19.34 loong64 **abi2**）。
+不确定时看 `mihomo-status` 的 `ABI` 行，或运行 `./install.sh --check`。
 
 ### ⚠️ 别被 GitHub 首页骗了
 
@@ -159,15 +169,21 @@ export all_proxy=socks5://127.0.0.1:7890
 ```
 
 KDE 系统代理：系统设置 → 网络 → 网络代理 → 手动，
-HTTP/HTTPS 填 `127.0.0.1:7890`，SOCKS 填 `127.0.0.1:7890`。
-（`~/.config/kioslaverc` 里当前指向的是**宿主机**上的代理，不是本机的 mihomo。）
+HTTP / HTTPS / SOCKS 都填 `127.0.0.1`、端口 `7890`，保存（KDE 会写进 `~/.config/kioslaverc`）。
+龙芯浏览器（lbrowser，Chromium 内核）不读 `http_proxy` 环境变量，只读这份配置，
+而且**只在启动时读一次**——改完代理后需要**完全退出浏览器再打开**。
+
+> 本包不会替你改这份配置（属于个人桌面设置），首次使用请按上面手动设一次。
+> 判断浏览器有没有走代理：`ss -tnp | grep lbrowser`，若出现 `127.0.0.1:7890` 连接即为已代理；
+> 若仍在直连 `140.82.x.x:443`（GitHub），说明还是直连状态。
 
 ### TUN 全局透明代理（需要 root）
 
 用户级 systemd 服务拿不到 `CAP_NET_ADMIN`，TUN 模式必须用系统级服务：
 
 ```bash
-sudo apt install ./mihomo-linux-loong64-abi1-v1.19.33.deb   # 自带 systemd 服务
+# 本机（Loongnix 25）用 abi2；旧世界机器换成 abi1
+sudo apt install ./mihomo-linux-loong64-abi2-v1.19.34.deb   # 自带 systemd 服务
 sudo systemctl enable --now mihomo
 ```
 
@@ -202,5 +218,15 @@ tail -f ~/.config/mihomo/mihomo.log # 实时日志
 
 **代理通但节点不变** → 面板里选策略组，再点「自动选择」跑一遍测速。
 
-**开机不自动启动** → `systemctl --user enable mihomo`；本机 linger 已开（`Linger=yes`），
-用户服务无需登录桌面也会跑。
+**走代理很慢 / 境外站点卡约 10 秒** → 多半是 DNS fallback 不可达。本机网络下
+1.1.1.1 / 8.8.8.8 被阻断，`config.yaml` 的 `fallback` 应保持为
+`https://doh.pub/dns-query` + `tls://223.5.5.5`（详见 [ADAPTATION-ABI2.md §4.3](./ADAPTATION-ABI2.md)）。
+
+**开机不自动启动** → `systemctl --user enable mihomo`。
+
+**注销后代理就停** → 说明没开 linger（本机 `Linger=no`，默认不常驻）：
+
+```bash
+sudo loginctl enable-linger $USER
+loginctl show-user $USER | grep Linger    # 应显示 Linger=yes
+```

@@ -1,8 +1,13 @@
-# mihomo 安装与适配记录
+# mihomo 安装与适配记录（旧世界 / abi1）
 
 > 机器：Loongnix GNU/Linux 20 (DaoXiangHu) / loongarch64 / KDE Plasma (X11)
 > 记录时间：2026-11-10 ~ 2026-11-11
 > 相关文档：[USAGE.md](./USAGE.md)（日常使用手册） · [README.md](./README.md)（本目录总览）
+>
+> ⚠️ **本文是旧世界机器（Loongnix 20 / 4.19 内核 / glibc 2.28）的记录，结论是"必须 abi1"。**
+> 新世界机器（Loongnix 25 / 6.6 内核 / glibc 2.41）的适配记录见
+> [ADAPTATION-ABI2.md](./ADAPTATION-ABI2.md) —— 那台机器上用的是 **abi2**。
+> 部署包现已改为自动判定 ABI，本文的"abi2 段错误"仅对旧世界成立。
 
 ---
 
@@ -158,7 +163,7 @@ pip install -U git+https://github.com/KT-Yeh/mihomo.git
 
 ---
 
-## 四、ABI 适配：abi2 段错误 → abi1 可用
+## 四、ABI 适配：abi2 段错误 → abi1 可用（旧世界）
 
 这是本次安装最关键的坑。
 
@@ -185,8 +190,8 @@ Segmentation fault (exit 139)
 ISA 与 ABI 差异。abi2 变体按正式 ABI2（LP64D）编译，在本机的早期 ABI 环境下崩溃；
 abi1 变体按基础 LP64 编译，兼容性更好。
 
-**结论**：本机**必须**使用 `linux-loong64-abi1` 变体。
-该结论已写入 `config.yaml` 文件头注释，防止日后误换。
+**结论**：这台旧世界机器**必须**使用 `linux-loong64-abi1` 变体。
+该结论已写入 `config.yaml` 文件头注释，防止日后误换；新世界机器则相反（见 [ADAPTATION-ABI2.md](./ADAPTATION-ABI2.md)）。
 
 ### 4.1 ABI 差异的根源：Go 工具链，而非构建参数
 
@@ -354,7 +359,8 @@ sudo 需要密码，无法无人值守安装系统级服务，故采用 **system
 3. **面板配置不持久**（见 6.4）；
 4. **面板的「配置档案」不可用**（后端 `/profiles` 404），订阅管理请用 `mihomo-sub`；
 5. **面板「系统代理」按钮在浏览器中无效**（见 6.1），请用 KDE 设置或 `https_proxy` 环境变量；
-6. **abi 约束**：若日后系统升级到正式 LoongArch ABI2 内核，可重新评估 abi2 变体。
+6. **abi 约束（旧世界机）**：本机只能用 abi1。部署包现已自动判定 ABI，若日后升级到新世界系统，
+   `install.sh` 会自动改选 abi2；新世界机器的记录见 [ADAPTATION-ABI2.md](./ADAPTATION-ABI2.md)。
 
 ---
 
