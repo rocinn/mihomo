@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+mihomo 订阅中转 (base64 -> Clash YAML)
+
+作用:有些机场无视 User-Agent,只返回 base64 编码的 ss://vmess://... 链接列表,
+      mihomo 的 http provider 无法解析。本脚本作为本地中转:
+      上游订阅 --(拉取并转换)--> Clash YAML --> mihomo
+
+上游地址从 ~/.config/mihomo/relay-upstream 读取(避免 token 写进 systemd 单元)。
+使用:mihomo-sub-relay [--port 18090]
+"""
+
+import base64
+import binascii
+import json
+import os
+import re
+import sys
+import urllib.parse
+import urllib.request
+
+import yaml
+
+HOME = os.path.expanduser("~")
+UPSTREAM_FILE = os.path.join(HOME, ".config/mihomo/relay-upstream")
+LOG_FILE = os.path.join(HOME, ".config/mihomo/relay.log")
+PORT = 18090
+
+CLASH_UA = "clash.meta"
+FALLBACK_UA = "ClashforWindows/0.20.39"
+
+
+def log(msg):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(msg.rstrip() + "\n")
+    except OSError:
+        pass
+
+
+def b64d(s):
+    """宽松 base64 解码:自动补 padding,容忍换行。失败返回 None。"""
+    s = re.sub(r"\s+", "", s or "")
+    s += "=" * (-len(s) % 4)
+    try:
+        return base64.b64decode(s)
+    except (binascii.Error, ValueError):
+        try:
+            return base64.urlsafe_b64decode(s)
+        except (binascii.Error, ValueError):
+            return None
+
+
+def name_of(uri, fallback):
+    frag = uri.split("#", 1)
+    if len(frag) == 2 and frag[1].strip():
+        return urllib.parse.unquote(frag[1].strip())
+    return fallback
+
+
+def parse_ss(uri):
+    body = uri[5:]
+    frag = ""
+    if "#" in body:
+        body, frag = body.split("#", 1)
+    body = body.split("?", 1)[0]
+    if "@" in body:
+        userinfo, hostport = body.rsplit("@", 1)
+        raw = b64d(userinfo)
+        if raw:
+            cred = raw.decode("utf-8", "ignore")
+        else:
+            cred = urllib.parse.unquote(userinfo)
+        if ":" not in cred:
+            return None
+        method, password = cred.split(":", 1)
+    else:
+        raw = b64d(body)
+        if not raw or b"@" not in raw:
+            return None
+        cred, hostport = raw.decode("utf-8", "ignore").rsplit("@", 1)
+        if ":" not in cred:
+            return None
+        method, password = cred.split(":", 1)
+    if ":" not in hostport:
+        return None
+    host, port = hostport.rsplit(":", 1)
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    return {
+        "name": urllib.parse.unquote(frag) if frag else "ss-%s:%s" % (host, port),
+        "type": "ss",
+        "server": host,
+        "port": port,
+        "cipher": method,
+        "password": password,
+        "udp": True,
+    }
+
+
+def parse_vmess(uri):
+    raw = b64d(uri[8:])
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw.decode("utf-8", "ignore"))
+    except (ValueError, TypeError):
+        return None
+    host = d.get("add")
+    if not host:
+        return None
+    try:
+        port = int(d.get("port"))
+    except (TypeError, ValueError):
+        return None
+    p = {
+        "name": d.get("ps") or "vmess-%s:%s" % (host, port),
+        "type": "vmess",
+        "server": host,
+        "port": port,
+        "uuid": d.get("id", ""),
+        "alterId": int(d.get("aid") or 0),
+        "cipher": d.get("scy") or "auto",
+        "udp": True,
+    }
+    net = d.get("net") or "tcp"
+    tls = (d.get("tls") or "").lower()
+    if net not in ("tcp", ""):
+        p["network"] = net
+    if net == "ws":
+        p["ws-opts"] = {"path": d.get("path") or "/"}
+        if d.get("host"):
+            p["ws-opts"]["headers"] = {"Host": d["host"]}
+    if tls in ("tls", "xtls"):
+        p["tls"] = True
+        if d.get("sni"):
+            p["servername"] = d["sni"]
+        if d.get("allowInsecure") in (1, "1", True):
+            p["skip-cert-verify"] = True
+    return p
+
+
+def parse_trojan(uri):
+    body = uri[len("trojan://"):]
+    frag = ""
+    if "#" in body:
+        body, frag = body.split("#", 1)
+    body, _, query = body.partition("?")
+    if "@" not in body:
+        return None
+    cred, hostport = body.rsplit("@", 1)
+    if ":" not in hostport:
+        return None
+    host, port = hostport.rsplit(":", 1)
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    q = urllib.parse.parse_qs(query)
+    p = {
+        "name": urllib.parse.unquote(frag) if frag else "trojan-%s:%s" % (host, port),
+        "type": "trojan",
+        "server": host,
+        "port": port,
+        "password": urllib.parse.unquote(cred),
+        "udp": True,
+    }
+    if q.get("sni"):
+        p["sni"] = q["sni"][0]
+    if q.get("allowInsecure") in ("1", "true"):
+        p["skip-cert-verify"] = True
+    if q.get("type") == "ws" or q.get("type", "").startswith("ws"):
+        p["network"] = "ws"
+        p["ws-opts"] = {"path": urllib.parse.unquote(q.get("path", ["/"])[0])}
+        if q.get("host"):
+            p["ws-opts"]["headers"] = {"Host": q["host"][0]}
+    return p
+
+
+def parse_hysteria2(uri):
+    for pref in ("hysteria2://", "hy2://"):
+        if uri.startswith(pref):
+            body = uri[len(pref):]
+            break
+    else:
+        return None
+    frag = ""
+    if "#" in body:
+        body, frag = body.split("#", 1)
+    body, _, query = body.partition("?")
+    if "@" not in body:
+        return None
+    cred, hostport = body.rsplit("@", 1)
+    if ":" not in hostport:
+        return None
+    host, port = hostport.rsplit(":", 1)
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    q = urllib.parse.parse_qs(query)
+    p = {
+        "name": urllib.parse.unquote(frag) if frag else "hy2-%s:%s" % (host, port),
+        "type": "hysteria2",
+        "server": host,
+        "port": port,
+        "password": urllib.parse.unquote(cred),
+    }
+    if q.get("sni"):
+        p["sni"] = q["sni"][0]
+    if q.get("insecure") in ("1", "true"):
+        p["skip-cert-verify"] = True
+    return p
+
+
+def parse_vless(uri):
+    body = uri[8:]
+    frag = ""
+    if "#" in body:
+        body, frag = body.split("#", 1)
+    body, _, query = body.partition("?")
+    if "@" not in body:
+        return None
+    uuid, hostport = body.rsplit("@", 1)
+    if ":" not in hostport:
+        return None
+    host, port = hostport.rsplit(":", 1)
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    q = urllib.parse.parse_qs(query)
+    p = {
+        "name": urllib.parse.unquote(frag) if frag else "vless-%s:%s" % (host, port),
+        "type": "vless",
+        "server": host,
+        "port": port,
+        "uuid": uuid,
+        "udp": True,
+    }
+    flow = q.get("flow", [""])[0]
+    if flow:
+        p["flow"] = flow
+    if q.get("security", [""])[0] in ("tls", "reality"):
+        p["tls"] = True
+        if q.get("sni"):
+            p["servername"] = q["sni"][0]
+    net = q.get("type", ["tcp"])[0]
+    if net != "tcp":
+        p["network"] = net
+        if net == "ws":
+            p["ws-opts"] = {"path": urllib.parse.unquote(q.get("path", ["/"])[0])}
+            if q.get("host"):
+                p["ws-opts"]["headers"] = {"Host": q["host"][0]}
+    return p
+
+
+PARSERS = [
+    ("ss://", parse_ss),
+    ("vmess://", parse_vmess),
+    ("trojan://", parse_trojan),
+    ("hysteria2://", parse_hysteria2),
+    ("hy2://", parse_hysteria2),
+    ("vless://", parse_vless),
+]
+
+
+def convert(text):
+    """把任意订阅内容转成 {'proxies': [...]} 字典。"""
+    text = (text or "").strip()
+    if not text:
+        return {"proxies": []}
+
+    # 1) 已经是 Clash YAML
+    if text.startswith("proxies:") or "proxy-groups:" in text[:4000]:
+        try:
+            d = yaml.safe_load(text)
+            if isinstance(d, dict) and "proxies" in d:
+                return {"proxies": d.get("proxies") or []}
+        except yaml.YAMLError:
+            pass
+
+    # 2) base64 -> 解出链接列表(或本身就是 YAML)
+    dec = b64d(text)
+    if dec is not None:
+        inner = dec.decode("utf-8", "ignore").strip()
+        if inner.startswith("proxies:") or "proxy-groups:" in inner[:4000]:
+            try:
+                d = yaml.safe_load(inner)
+                if isinstance(d, dict) and "proxies" in d:
+                    return {"proxies": d.get("proxies") or []}
+            except yaml.YAMLError:
+                pass
+        text = inner
+
+    # 3) 逐行解析 ss:// vmess:// ...
+    proxies = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for pref, fn in PARSERS:
+            if line.startswith(pref):
+                try:
+                    p = fn(line)
+                except Exception as e:  # 单个节点解析失败不影响整体
+                    log("解析失败 %s: %s" % (line[:60], e))
+                    p = None
+                if p:
+                    proxies.append(p)
+                break
+    return {"proxies": proxies}
+
+
+def fetch(upstream):
+    last_err = None
+    for ua in (CLASH_UA, FALLBACK_UA, "Mozilla/5.0"):
+        try:
+            req = urllib.request.Request(
+                upstream, headers={"User-Agent": ua, "Accept": "*/*"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.read().decode("utf-8", "ignore")
+        except Exception as e:
+            last_err = e
+            log("拉取失败 (UA=%s): %s" % (ua, e))
+    raise last_err
+
+
+def handle(client, path):
+    try:
+        with open(UPSTREAM_FILE, encoding="utf-8") as f:
+            upstream = f.read().strip()
+        if not upstream:
+            body = b"upstream not configured"
+            client.send_response(500)
+            client.send_header("Content-Length", str(len(body)))
+            client.end_headers()
+            client.wfile.write(body)
+            return
+        raw = fetch(upstream)
+        data = convert(raw)
+        out = yaml.safe_dump(data, allow_unicode=True, sort_keys=False,
+                             default_flow_style=False).encode("utf-8")
+        log("转换完成: 原始 %d 字节 -> %d 个节点" % (len(raw), len(data["proxies"])))
+        client.send_response(200)
+        client.send_header("Content-Type", "text/yaml; charset=utf-8")
+        client.send_header("Content-Length", str(len(out)))
+        client.end_headers()
+        client.wfile.write(out)
+    except Exception as e:
+        log("处理异常: %s" % e)
+        body = str(e).encode("utf-8")
+        try:
+            client.send_response(502)
+            client.send_header("Content-Length", str(len(body)))
+            client.end_headers()
+            client.wfile.write(body)
+        except OSError:
+            pass
+
+
+def main():
+    global PORT
+    if "--port" in sys.argv:
+        PORT = int(sys.argv[sys.argv.index("--port") + 1])
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            handle(self, self.path)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", PORT), Handler)
+    log("订阅中转启动于 127.0.0.1:%d,上游配置文件 %s" % (PORT, UPSTREAM_FILE))
+    print("mihomo 订阅中转运行中: http://127.0.0.1:%d/sub" % PORT)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

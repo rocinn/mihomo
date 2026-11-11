@@ -1,0 +1,20 @@
+[Unit]
+Description=mihomo (Clash.Meta) proxy core
+Documentation=https://wiki.metacubex.one/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mihomo -d %h/.config/mihomo
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+# 注:用户级服务无法获得 CAP_NET_ADMIN,TUN(全局透明代理)模式需改用系统级服务(root 启动)
+LimitNOFILE=1048576
+# 日志落盘到用户可读的位置(用户无权读 systemd journal)
+StandardOutput=append:%h/.config/mihomo/mihomo.log
+StandardError=append:%h/.config/mihomo/mihomo.log
+
+[Install]
+WantedBy=default.target

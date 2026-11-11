@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# 设置/更新 mihomo 订阅地址 (proxy-providers.mysub.url)
+#
+# 用法:
+#   mihomo-sub <订阅链接>              直连模式:机场直接返回 Clash YAML(标准做法)
+#   mihomo-sub --relay <订阅链接>       中转模式:机场只返回 base64,本地转成 Clash YAML
+#   mihomo-sub --show                  查看当前订阅
+#   mihomo-sub --update                立即重拉订阅并显示节点数
+#   mihomo-sub --test                  连通性自检(拉一次并统计节点)
+
+set -euo pipefail
+
+CFG="$HOME/.config/mihomo/config.yaml"
+RELAY_UP="$HOME/.config/mihomo/relay-upstream"
+RELAY_URL="http://127.0.0.1:18090/sub"
+
+set_provider_url() {
+    python3 - "$CFG" "$1" <<'PY'
+import re, sys
+path, url = sys.argv[1], sys.argv[2]
+src = open(path, encoding="utf-8").read()
+new, n = re.subn(
+    r"(proxy-providers:\s*\n(?:.*\n)*?\s+mysub:(?:.*\n)*?\s+url:\s*)\"[^\"]*\"",
+    lambda m: m.group(1) + '"' + url + '"',
+    src, count=1)
+if n == 0:
+    sys.exit("未在 proxy-providers.mysub 中找到 url 字段,请手动编辑 " + path)
+open(path, "w", encoding="utf-8").write(new)
+PY
+}
+
+show() {
+    python3 - "$CFG" "$RELAY_UP" <<'PY'
+import re, sys
+cfg, relay = sys.argv[1], sys.argv[2]
+src = open(cfg, encoding="utf-8").read()
+m = re.search(r"proxy-providers:\s*\n(?:.*\n)*?\s+mysub:(?:.*\n)*?\s+url:\s*[\"']?(.*?)[\"']?\s*\n", src)
+url = m.group(1) if m else "(未找到)"
+print("当前模式:", "中转(relay)" if url.startswith("http://127.0.0.1:18090") else "直连(direct)")
+print("mihomo 拉取地址:", url)
+try:
+    up = open(relay, encoding="utf-8").read().strip()
+    if up:
+        print("中转上游地址:", up)
+except OSError:
+    pass
+PY
+}
+
+node_count() {
+    wget -q -O - "http://127.0.0.1:9090/proxies/PROXY" 2>/dev/null | python3 -c \
+        "import json,sys;d=json.load(sys.stdin);a=d.get('all',[]);print(f'  PROXY 组共 {len(a)} 项: '+', '.join(a[:8]))" \
+        2>/dev/null || echo "  (读取失败)"
+}
+
+restart() {
+    systemctl --user restart mihomo.service
+    sleep 3
+}
+
+case "${1:-}" in
+    --show)
+        show ;;
+    --update)
+        restart
+        echo "已重启,当前节点:"
+        node_count ;;
+    --test)
+        echo "=== 连通性自检 ==="
+        systemctl --user is-active --quiet mihomo.service && echo "mihomo 服务: ✅ 运行中" || echo "mihomo 服务: ❌ 未运行"
+        echo "控制 API: $(wget -q -O - http://127.0.0.1:9090/version 2>/dev/null || echo '无响应')"
+        echo "订阅 provider 状态:"
+        wget -q -O - http://127.0.0.1:9090/providers/proxies 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin).get('providers',{})
+for k,v in d.items():
+    ps=v.get('proxies') or []
+    print('  %s: %d 个节点' % (k, len(ps)))
+" 2>/dev/null || echo "  (读取失败)"
+        node_count ;;
+    --relay)
+        url="${2:-}"
+        if [ -z "$url" ]; then echo "用法: mihomo-sub --relay <订阅链接>" >&2; exit 1; fi
+        printf '%s' "$url" > "$RELAY_UP"
+        chmod 600 "$RELAY_UP"
+        systemctl --user restart mihomo-sub-relay.service 2>/dev/null || true
+        sleep 2
+        set_provider_url "$RELAY_URL"
+        restart
+        echo "已切换到中转模式,上游写入 $RELAY_UP"
+        node_count ;;
+    http*)
+        set_provider_url "$1"
+        restart
+        echo "已切换到直连模式并重拉订阅:"
+        node_count ;;
+    "")
+        echo "用法: mihomo-sub <订阅链接> | --relay <订阅链接> | --show | --update | --test" >&2
+        exit 1 ;;
+    *)
+        echo "用法: mihomo-sub <订阅链接> | --relay <订阅链接> | --show | --update | --test" >&2
+        exit 1 ;;
+esac

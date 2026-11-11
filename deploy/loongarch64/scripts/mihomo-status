@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# mihomo 状态速查
+set -uo pipefail
+
+CFG="$HOME/.config/mihomo/config.yaml"
+API="http://127.0.0.1:9090"
+
+echo "=========== mihomo 状态 ==========="
+if systemctl --user is-active --quiet mihomo.service; then
+    echo "服务状态: ✅ 运行中 (PID $(systemctl --user show mihomo.service -p MainPID --value))"
+else
+    echo "服务状态: ❌ 未运行   —— 启动: systemctl --user start mihomo"
+    exit 1
+fi
+
+echo "版本: $(wget -q -O - "$API/version" 2>/dev/null || echo '(API 无响应)')"
+echo "配置: $CFG"
+
+echo
+echo "--- 监听端口 ---"
+ss -tln 2>/dev/null | grep -E "7890|9090|1053" | awk '{print "  " $4}'
+
+echo
+echo "--- 代理组 ---"
+wget -q -O - "$API/proxies" 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['proxies']
+for name,p in d.items():
+    if p.get('type') in ('Selector','URLTest','Fallback','LoadBalance'):
+        print(f\"  {name:12s} [{p['type']:9s}] 当前={p.get('now','-')!r} 可选={len(p.get('all',[]))}\")
+" 2>/dev/null || echo "  (读取失败)"
+
+echo
+echo "--- 订阅 ---"
+python3 - "$CFG" <<'PY'
+import re, sys
+cfg = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"proxy-providers:\s*\n(?:.*\n)*?\s+mysub:(?:.*\n)*?\s+url:\s*[\"']?(.*?)[\"']?\s*\n", cfg)
+print("  地址:", (m.group(1) if m else "未配置(使用手写 proxies 模式)"))
+PY
+
+echo
+echo "--- 最近日志 ---"
+tail -6 "$HOME/.config/mihomo/mihomo.log" 2>/dev/null | sed 's/^/  /'

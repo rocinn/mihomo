@@ -1,0 +1,101 @@
+# mihomo (Clash.Meta) 配置 —— 本机实测可用版本: v1.19.33 linux loong64 **abi1**
+# 注意: 必须用 abi1 变体, abi2 在本机(3A6000 + 4.19 内核)会段错误
+# 订阅地址请填在下面 proxy-providers 的 url
+
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+external-controller: 127.0.0.1:9090
+secret: ''
+external-ui: ui
+external-ui-url: "https://codeload.github.com/MetaCubeX/metacubexd/zip/refs/heads/gh-pages"
+
+dns:
+  enable: true
+  ipv6: false
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - '+.localdomain'
+    - 'localhost.ptlogin2.qq.com'
+    - '+.srv.nintendo.net'
+    - '+.stun.playstation.net'
+    - '+.xboxlive.com'
+    - 'time.*.com'
+    - '+.pool.ntp.org'
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - tls://223.5.5.5
+  fallback:
+    - tls://1.1.1.1
+    - tls://8.8.8.8
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
+
+# ---- 节点来源: 二选一 ----
+# 方式 A: 订阅(推荐) —— 把 url 换成你的订阅地址
+proxy-providers:
+  mysub:
+    type: http
+    url: "https://example.com/your-subscription-link"
+    path: ./providers/mysub.yaml
+    interval: 3600
+    # 关键:伪装成 Clash 客户端,否则机场会返回 base64 编码而非 Clash YAML
+    header:
+      User-Agent:
+        - "clash.meta"
+        - "ClashforWindows/0.20.39"
+        - "Clash/1.10.0"
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+
+# 方式 B: 手写节点(直接写在下面), 例如:
+# proxies:
+#   - name: "示例节点"
+#     type: ss
+#     server: 1.2.3.4
+#     port: 8388
+#     cipher: aes-256-gcm
+#     password: "password"
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    use:
+      - mysub
+    proxies:
+      - DIRECT
+  - name: 自动选择
+    type: url-test
+    use:
+      - mysub
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+  - name: 漏网之鱼
+    type: select
+    proxies:
+      - PROXY
+      - 自动选择
+      - DIRECT
+
+rules:
+  - GEOIP,CN,DIRECT
+  - GEOSITE,category-ads-all,REJECT
+  - MATCH,漏网之鱼

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Clash 面板 (mihomo)
+Name[en]=Clash Dashboard (mihomo)
+Comment=打开 mihomo/Clash.Meta 图形控制面板
+Comment[en]=Open mihomo (Clash.Meta) web dashboard
+Exec=@HOME@/.local/bin/mihomo-panel
+Icon=network-vpn
+Terminal=false
+Categories=Network;
+Keywords=clash;mihomo;proxy;代理;vpn;

@@ -1,0 +1,15 @@
+[Unit]
+Description=mihomo 订阅中转 (base64 -> Clash YAML)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mihomo-sub-relay --port 18090
+Restart=always
+RestartSec=5s
+StandardOutput=append:%h/.config/mihomo/relay.log
+StandardError=append:%h/.config/mihomo/relay.log
+
+[Install]
+WantedBy=default.target

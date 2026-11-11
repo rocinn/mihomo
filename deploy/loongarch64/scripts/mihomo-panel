@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# 打开 mihomo 图形面板 (MetaCubeXD)
+set -euo pipefail
+
+ADDR="127.0.0.1:9090"
+
+if ! systemctl --user is-active --quiet mihomo.service; then
+    echo "mihomo 未运行,正在启动..."
+    systemctl --user start mihomo.service
+    sleep 2
+fi
+
+if ! systemctl --user is-active --quiet mihomo.service; then
+    echo "启动失败,请检查: systemctl --user status mihomo" >&2
+    exit 1
+fi
+
+URL="http://${ADDR}/ui/"
+echo "打开面板: $URL"
+if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL"
+else
+    echo "请手动用浏览器访问上面的地址"
+fi
